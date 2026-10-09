@@ -2,6 +2,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import type { Configuration, SdkInitDiagnostic } from '../contracts';
 import { errorMessage } from '../i18n';
+import { researchMode } from './mode';
 
 export class AppError extends Error {
   reportedCostUsd: number | null = null;
@@ -16,6 +17,9 @@ export function sdkInitializationMismatch(expectedTools: string[], actualTools: 
   const actual = Array.isArray(actualTools) ? actualTools : null;
   const unexpected = actual?.filter(tool => typeof tool !== 'string' || !expectedTools.includes(tool)) ?? [];
   if (!actual || unexpected.length) reasons.push('unexpected_tools');
+  // A researcher without its web tools would "complete" with zero evidence; fail loudly instead.
+  const missing = actual ? expectedTools.filter(tool => !actual.includes(tool)) : [];
+  if (missing.length) reasons.push('missing_tools');
   if (!Array.isArray(mcpServers) || mcpServers.length > 0) reasons.push('unexpected_mcp');
   if (permissionMode !== 'dontAsk') reasons.push('unexpected_permission_mode');
   if (!reasons.length) return null;
@@ -33,7 +37,7 @@ export function sdkInitializationMismatch(expectedTools: string[], actualTools: 
   const diagnostic: SdkInitDiagnostic = {
     kind: 'sdk_init_mismatch', context: web ? 'researcher' : 'coordinator', reasons,
     expectedTools: expectedTools.slice(0, limit).map(safeName), actualTools: (actual ?? []).slice(0, limit).map(safeName),
-    unexpectedTools: unexpected.slice(0, limit).map(safeName),
+    unexpectedTools: unexpected.slice(0, limit).map(safeName), missingTools: missing.slice(0, limit).map(safeName),
     actualToolCount: actual ? Math.min(actual.length, countLimit) : null,
     toolListsTruncated: Boolean(actual && actual.length > limit) || unexpected.length > limit || expectedTools.length > limit,
     mcpCount: Array.isArray(mcpServers) ? Math.min(mcpServers.length, countLimit) : null,
@@ -52,7 +56,10 @@ export function readConfiguration(): Configuration {
     : Number.isFinite(legacy) && legacy > 0 ? 'SPIKE_MAX_BUDGET_USD' : 'missing';
   const keyPresent = Boolean(process.env.ANTHROPIC_API_KEY?.trim());
   return { keyPresent, budgetPresent: budgetSource !== 'missing', budgetSource,
-    modelMode: process.env.CLAUDE_MODEL?.trim() ? 'override' : 'default', ready: keyPresent && budgetSource !== 'missing' };
+    modelMode: process.env.CLAUDE_MODEL?.trim() ? 'override' : 'default', ready: keyPresent && budgetSource !== 'missing',
+    research: (() => { const m = researchMode(); return { mode: m.name, rounds: m.secondRound ? 2 : 1, concurrency: m.concurrency,
+      searches: m.researcher.searches, fetches: m.researcher.fetches,
+      model: m.researcher.model ?? 'predeterminado del SDK' }; })() };
 }
 export function configuredBudget() {
   const config = readConfiguration();
@@ -111,12 +118,19 @@ export async function readBody(request: Request) {
 export function errorResponse(error: unknown) {
   return Response.json({ error: category(error), message: errorMessage(category(error)), diagnostic: diagnosticFor(error) }, { status: error instanceof AppError ? error.status : 500 });
 }
-interface ActiveRun { id: string; abort: AbortController }
+// One paid research run at a time in the whole process; other investigations stay editable.
+interface ActiveRun { id: string; abort: AbortController; workspaceId: string }
 const globalRuntime = globalThis as typeof globalThis & { gtmActiveRun?: ActiveRun };
 export const activeRun = () => globalRuntime.gtmActiveRun ?? null;
-export function acquireRun(id: string, abort: AbortController) {
+export function acquireRun(id: string, abort: AbortController, workspaceId: string) {
   if (activeRun()) throw new AppError('research_already_running', 409);
-  globalRuntime.gtmActiveRun = { id, abort };
+  globalRuntime.gtmActiveRun = { id, abort, workspaceId };
 }
 export function releaseRun(id: string) { if (activeRun()?.id === id) delete globalRuntime.gtmActiveRun; }
-export function assertIdle() { if (activeRun()) throw new AppError('research_already_running', 409); }
+export function assertIdle(workspaceId: string) { if (activeRun()?.workspaceId === workspaceId) throw new AppError('research_already_running', 409); }
+// Investigation selected by the client: `x-workspace-id` header (fetch) or `?workspace=` (links).
+export function workspaceIdFrom(request: Request) {
+  const value = request.headers.get('x-workspace-id') || new URL(request.url).searchParams.get('workspace');
+  if (!value || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value)) throw new AppError('workspace_not_selected');
+  return value;
+}

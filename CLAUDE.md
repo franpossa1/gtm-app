@@ -23,9 +23,11 @@ Caso demo: manual digital de anestesiología → España → variante Cataluña 
 | `lib/dependencies.ts` | `OWNED_BLOCKS` (A: audiences/market · B: problems/value · C: organizations/channels · D: product/paths/priorities), tabla `DEPENDENCIES` por premisa, `expandPlan` |
 | `lib/prompts.ts` | Prompt del coordinador (sin herramientas), roles A–D, `scenarioContext` |
 | `lib/i18n.ts` | Etiquetas y mensajes de error en español |
-| `lib/server/agent.ts` | `callAgent()`: una `query()` aislada por tarea. Dir temporal propio, env limpio solo con API key, `settingSources: []`, sin MCP, `permissionMode: 'dontAsk'`, tools solo WebSearch/WebFetch, hooks con cupo 5/5, 10 turnos, 120 s, `outputFormat` json_schema, registro de páginas observadas vía PostToolUse |
+| `lib/server/agent.ts` | `callAgent()`: una `query()` aislada por tarea. Dir temporal propio, env limpio solo con API key, `settingSources: []`, sin MCP, `permissionMode: 'dontAsk'`, tools solo WebSearch/WebFetch (sin `--bare`: elimina las herramientas web), cupos/turnos/modelo según `CallProfile` de `mode.ts`, acepta la herramienta sintética `StructuredOutput`, logs `[gtm:agent:*]` redactados, `outputFormat` json_schema, registro de páginas observadas vía PostToolUse |
 | `lib/server/orchestrate.ts` | Coordinador → plan → A/B/C (concurrencia ≤2) → D; normalización de fuentes/IDs/vigencia; protección de revisión obsoleta; 2ª ronda acotada por `implications`; presupuesto = `budget/9` por llamada |
-| `lib/server/store.ts` | Estado en `workspace.json`: cola serializada + escritura atómica (tmp + rename). Al cargar marca tareas activas como `interrupted` |
+| `lib/server/store.ts` | Varias investigaciones: `DATA_DIR/workspaces/<id>.json`, elegida por request con `inWorkspace()` (AsyncLocalStorage); cola serializada + escritura atómica (tmp + rename). Al cargar marca tareas activas como `interrupted`. Migra el antiguo `workspace.json` |
+| `lib/server/mode.ts` | `RESEARCH_MODE=fast` (predeterminado: Haiku, 1 búsqueda + 3 fuentes, A/B/C en paralelo, D sin web, 1 ronda) o `full` (límites de la spec) |
+| `app/api/workspaces/route.ts` | Listar y crear investigaciones. El resto de las rutas exige `x-workspace-id` (o `?workspace=` en exportaciones) |
 | `lib/server/runtime.ts` | `AppError`, configuración/presupuesto, directorios (`%LOCALAPPDATA%/GTMCanvas/{data,agents}` por defecto), guard de origen local, `assertNoSecrets`, diagnóstico seguro de init del SDK, lock de ejecución única |
 | `lib/server/export.ts` | Export JSON/Markdown sin secretos |
 | `app/api/{workspace,research,decisions,export}/route.ts` | API; `research` devuelve NDJSON y acepta `{action:'cancel'}` |

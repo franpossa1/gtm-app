@@ -1,14 +1,17 @@
 import { z } from 'zod';
 import { BriefSchema } from '../../../lib/contracts';
-import { activeRun, AppError, assertIdle, assertLocalRequest, errorResponse, readBody, readConfiguration } from '../../../lib/server/runtime';
-import { briefItems, findScenario, getWorkspace, id, now, transact } from '../../../lib/server/store';
+import { activeRun, AppError, assertIdle, assertLocalRequest, errorResponse, readBody, readConfiguration, workspaceIdFrom } from '../../../lib/server/runtime';
+import { briefItems, findScenario, getWorkspace, id, inWorkspace, now, transact } from '../../../lib/server/store';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export async function GET(request: Request) {
   try {
     assertLocalRequest(request);
-    return Response.json({ workspace: await getWorkspace(), configuration: readConfiguration(), activeRun: activeRun()?.id ?? null });
+    const workspaceId = workspaceIdFrom(request);
+    const run = activeRun();
+    return await inWorkspace(workspaceId, async () => Response.json({ workspaceId, workspace: await getWorkspace(), configuration: readConfiguration(),
+      activeRun: run?.workspaceId === workspaceId ? run.id : null, runningElsewhere: run && run.workspaceId !== workspaceId ? run.workspaceId : null }));
   } catch (error) { return errorResponse(error); }
 }
 const mutation = z.discriminatedUnion('action', [
@@ -17,12 +20,14 @@ const mutation = z.discriminatedUnion('action', [
 ]);
 export async function POST(request: Request) {
   try {
+    const workspaceId = workspaceIdFrom(request);
     const parsed = mutation.safeParse(await readBody(request));
     if (!parsed.success) throw new AppError('invalid_request');
-    assertIdle();
+    assertIdle(workspaceId);
+    return await inWorkspace(workspaceId, async () => {
     let scenarioId = parsed.data.scenarioId;
     await transact(state => {
-      assertIdle();
+      assertIdle(workspaceId);
       const scenario = findScenario(state, parsed.data.scenarioId, parsed.data.expectedRevision);
       if (parsed.data.action === 'brief') {
         scenario.brief = parsed.data.brief;
@@ -38,5 +43,6 @@ export async function POST(request: Request) {
       }
     });
     return Response.json({ workspace: await getWorkspace(), scenarioId });
+    });
   } catch (error) { return errorResponse(error); }
 }

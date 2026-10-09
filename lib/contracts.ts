@@ -63,8 +63,8 @@ export type TaskStatus = 'pending' | 'researching' | 'completed' | 'error' | 'ca
 export interface SdkInitDiagnostic {
   kind: 'sdk_init_mismatch';
   context: 'coordinator' | 'researcher';
-  reasons: ('unexpected_tools' | 'unexpected_mcp' | 'unexpected_permission_mode')[];
-  expectedTools: string[]; actualTools: string[]; unexpectedTools: string[];
+  reasons: ('unexpected_tools' | 'missing_tools' | 'unexpected_mcp' | 'unexpected_permission_mode')[];
+  expectedTools: string[]; actualTools: string[]; unexpectedTools: string[]; missingTools?: string[];
   actualToolCount: number | null; toolListsTruncated: boolean;
   mcpCount: number | null; mcpCountCapped: boolean;
   expectedPermissionMode: 'dontAsk';
@@ -87,10 +87,12 @@ export interface Run { id: string; scenarioId: string; status: 'running' | 'comp
   startedAt: string; finishedAt: string | null; reportedCostUsd: number | null; budgetUsd: number; interpretation: string; clarification: string | null }
 export interface TimelineEvent { id: string; type: string; runId: string; scenarioId: string; taskId: string | null;
   summary: string; at: string; blocks: BlockId[]; diagnostic?: SdkInitDiagnostic }
-export interface Workspace { version: 1; scenarios: Scenario[]; tasks: Task[]; runs: Run[]; events: TimelineEvent[] }
+export interface Workspace { version: 1; meta?: { id: string; createdAt: string; updatedAt?: string }; scenarios: Scenario[]; tasks: Task[]; runs: Run[]; events: TimelineEvent[] }
 export interface Configuration { keyPresent: boolean; budgetPresent: boolean; modelMode: 'default' | 'override';
-  budgetSource: 'RUN_BUDGET_USD' | 'SPIKE_MAX_BUDGET_USD' | 'missing'; ready: boolean }
-export interface WorkspaceResponse { workspace: Workspace; configuration: Configuration; activeRun: string | null }
+  budgetSource: 'RUN_BUDGET_USD' | 'SPIKE_MAX_BUDGET_USD' | 'missing'; ready: boolean;
+  research: { mode: 'fast' | 'full'; rounds: number; concurrency: number; searches: number; fetches: number; model: string } }
+export interface WorkspaceResponse { workspaceId: string; workspace: Workspace; configuration: Configuration; activeRun: string | null; runningElsewhere: string | null }
+export interface WorkspaceSummary { id: string; product: string; market: string; scenarios: number; runs: number; createdAt: string; updatedAt: string }
 export interface StreamEvent extends TimelineEvent { workspace?: Workspace }
 
 export const BLOCK_META: Record<BlockId, { title: string; eyebrow: string; empty: string; researcher: Researcher }> = {

@@ -1,17 +1,19 @@
 import { DecisionInputSchema } from '../../../lib/contracts';
-import { AppError, assertIdle, errorResponse, readBody } from '../../../lib/server/runtime';
-import { findScenario, getWorkspace, id, now, transact } from '../../../lib/server/store';
+import { AppError, assertIdle, errorResponse, readBody, workspaceIdFrom } from '../../../lib/server/runtime';
+import { findScenario, getWorkspace, id, inWorkspace, now, transact } from '../../../lib/server/store';
 import { label } from '../../../lib/i18n';
 
 export const runtime = 'nodejs';
 export async function POST(request: Request) {
   try {
+    const workspaceId = workspaceIdFrom(request);
     const parsed = DecisionInputSchema.safeParse(await readBody(request));
     if (!parsed.success) throw new AppError('invalid_request');
     const input = parsed.data;
-    assertIdle();
+    assertIdle(workspaceId);
+    return await inWorkspace(workspaceId, async () => {
     await transact(state => {
-      assertIdle();
+      assertIdle(workspaceId);
       const scenario = findScenario(state, input.scenarioId, input.expectedRevision);
       const update = scenario.proposals.find(p => p.id === input.proposalId);
       const opportunity = scenario.opportunities.find(p => p.id === input.proposalId);
@@ -42,5 +44,6 @@ export async function POST(request: Request) {
     });
     return Response.json({ workspace: await getWorkspace(), followUpInstruction: input.consequential
       ? `Reevaluar únicamente las dependencias de esta decisión humana registrada (${label(input.action)}): ${input.text || 'propuesta aceptada'}. Condiciones: ${input.conditions || 'sin condiciones aportadas'}. Preservar el contenido aceptado y proponer las actualizaciones para revisión.` : null });
+    });
   } catch (error) { return errorResponse(error); }
 }

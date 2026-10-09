@@ -16,13 +16,14 @@ const errors: Record<string, string> = {
   local_access_only: 'Esta aplicación solo admite acceso local mediante localhost, 127.0.0.1 o [::1].',
   configuration_required: 'Configura ANTHROPIC_API_KEY y un presupuesto positivo en RUN_BUDGET_USD, y reinicia el servidor.',
   research_already_running: 'Hay una investigación activa. Cancela la investigación y espera su cierre antes de continuar.',
+  workspace_not_selected: 'No se indicó qué investigación abrir.', workspace_not_found: 'La investigación no existe o fue movida.',
   scenario_changed_refresh: 'El escenario cambió. Actualiza la página antes de enviar este cambio.',
   scenario_not_found: 'No se encontró el escenario.', invalid_request: 'La solicitud no tiene el formato esperado.',
   secret_not_allowed: 'Se detectó una credencial. No incluyas secretos en el contenido del canvas.', request_too_large: 'El contenido es demasiado extenso.',
   runtime_directory_not_isolated: 'AGENT_WORK_DIR debe estar separado del código y del directorio de datos.',
   state_format_not_supported: 'El formato de datos guardado no es compatible.', state_could_not_be_loaded: 'No se pudo cargar el archivo de datos local.',
   authentication_source_not_allowed: 'El agente no utilizó la API key configurada. Se detuvo por seguridad.',
-  unexpected_runtime_configuration: 'El SDK expuso herramientas o permisos no autorizados. Se detuvo por seguridad.',
+  unexpected_runtime_configuration: 'El SDK arrancó con herramientas o permisos distintos de los configurados (sobrantes o faltantes). Se detuvo por seguridad.',
   runtime_initialization_missing: 'El SDK no confirmó su configuración inicial.', invalid_structured_output: 'La investigación devolvió una estructura inválida.',
   task_budget_reached: 'Se alcanzó el presupuesto de la tarea.', run_budget_reached: 'Se alcanzó el presupuesto de la investigación.',
   task_turn_limit: 'Se alcanzó el límite de turnos de la tarea.', provider_request_failed: 'No se pudo completar la llamada al proveedor. Revisa la configuración y disponibilidad de la cuenta.',
@@ -53,6 +54,10 @@ export function diagnosticLines(diagnostic: SdkInitDiagnostic) {
   if (diagnostic.reasons.includes('unexpected_tools')) {
     lines.push(`Herramientas no esperadas: ${names(diagnostic.unexpectedTools)}.`);
     lines.push(`Herramientas permitidas: ${names(diagnostic.expectedTools)}. Recibidas: ${names(diagnostic.actualTools)}. Cantidad: ${diagnostic.actualToolCount ?? 'desconocida'}.`);
+  }
+  if (diagnostic.reasons.includes('missing_tools')) {
+    lines.push(`Herramientas requeridas ausentes: ${names(diagnostic.missingTools ?? [])}.`);
+    lines.push(`Recibidas: ${names(diagnostic.actualTools)}. La investigación no puede consultar fuentes sin ellas.`);
   }
   if (diagnostic.reasons.includes('unexpected_mcp')) lines.push(`Configuraciones MCP recibidas: ${diagnostic.mcpCount ?? 'cantidad desconocida'}${diagnostic.mcpCountCapped ? ' o más' : ''}; permitidas: 0.`);
   if (diagnostic.reasons.includes('unexpected_permission_mode')) lines.push(`Modo de permisos recibido: ${diagnostic.actualPermissionMode === 'UNKNOWN' ? 'desconocido' : diagnostic.actualPermissionMode}; permitido: ${diagnostic.expectedPermissionMode}.`);

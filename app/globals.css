@@ -115,6 +115,11 @@ code { font-size: 12px; background: #ede9e4; padding: 2px 5px; border-radius: 4p
 .scenario-control label { font-size: 12px; letter-spacing: .5px; }
 .scenario-control select { font-size: 14px; letter-spacing: 0; }
 .scenario-control .secondary { justify-self: end; }
+.workspace-picker { display: flex; align-items: center; gap: 8px; font-size: 11px; letter-spacing: .5px; color: inherit; }
+.workspace-picker select { max-width: 280px; font-size: 13px; letter-spacing: 0; padding: 4px 8px; border-radius: 8px; }
+.inline-confirm { display: grid; gap: 8px; padding: 10px; border: 1px solid #e5e3df; border-radius: 10px; background: #fafaf9; }
+.inline-confirm label { display: grid; gap: 6px; }
+.scenario-actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
 .scenario-control > span { text-align: right; }
 
 .notice {

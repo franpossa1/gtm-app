@@ -5,6 +5,7 @@ import { COORDINATOR_PROMPT, planPrompt, researcherPrompt, scenarioContext } fro
 import { callAgent, type ObservedPage } from './agent';
 import { AppError, category, configuredBudget, diagnosticFor } from './runtime';
 import { findScenario, getWorkspace, id, now, transact } from './store';
+import { QUICK_SCOPE, researchMode } from './mode';
 import type { z } from 'zod';
 import { label } from '../i18n';
 
@@ -78,6 +79,9 @@ function normalizeResearch(result: ResearchResult, task: Task, pages: Map<string
 
 export async function orchestrate(input: Input, runId: string, signal: AbortSignal, emit: (event: StreamEvent) => void) {
   const budget = configuredBudget();
+  const mode = researchMode();
+  // Pages observed by A/B/C; in fast mode D synthesizes from these without its own web access.
+  const observedPages = new Map<string, ObservedPage>();
   const perCall = budget / 9; // One coordinator + up to four researchers in each of two rounds.
   let reported = 0, unknownCost = false, calls = 0;
   let scenarioId = input.scenarioId;
@@ -112,7 +116,7 @@ export async function orchestrate(input: Input, runId: string, signal: AbortSign
     } else {
       permit();
       const coordinated = await callAgent({ system: COORDINATOR_PROMPT,
-        prompt: planPrompt(base, input.instruction, input.blockId), schema: PlanSchema, web: false,
+        prompt: planPrompt(base, input.instruction, input.blockId), schema: PlanSchema, web: false, profile: mode.coordinator,
         budget: perCall, signal, onCost: cost, onTool: async () => {} });
       plan = coordinated.output;
       if (plan.clarification?.trim()) {
@@ -160,13 +164,20 @@ export async function orchestrate(input: Input, runId: string, signal: AbortSign
         permit();
         await transact(state => { const current = state.tasks.find(t => t.id === task.id)!; current.status = 'researching'; current.startedAt = now(); });
         await event('task_started', `Investigador ${task.researcher} · ronda ${round}`, task.id, task.blocks);
+        const synthesis = task.researcher === 'D';
+        const web = !synthesis || mode.synthesisUsesWeb;
         const result = await callAgent({ system: researcherPrompt(task.researcher, task.blocks),
           prompt: JSON.stringify({ context: scenarioContext(snapshot), instruction: task.instruction,
-            siblings: task.researcher === 'D' || round === 2 ? siblingResults : [], round,
-            checkedAt: now(), ownership: task.blocks }), schema: ResearchResultSchema, web: true,
+            siblings: synthesis || round === 2 ? siblingResults : [], round,
+            checkedAt: now(), ownership: task.blocks,
+            ...(mode.name === 'fast' && web ? { scope: QUICK_SCOPE } : {}),
+            ...(web ? {} : { webAccess: 'none: synthesize only from sibling results and cite only their source URLs; keep it brief' }) }),
+          schema: ResearchResultSchema, web, profile: synthesis ? mode.synthesis : mode.researcher,
           budget: perCall, signal, onCost: cost, onTool: summary => event('tool_progress', summary, task.id, task.blocks) });
         const latestScenario = findScenario(await getWorkspace(), scenarioId);
-        const normalized = normalizeResearch(result.output, task, result.pages, latestScenario);
+        for (const [url, page] of result.pages) observedPages.set(url, page);
+        const pages = web ? result.pages : new Map(observedPages);
+        const normalized = normalizeResearch(result.output, task, pages, latestScenario);
         let integrated = false;
         await transact(state => {
           const current = state.tasks.find(t => t.id === task.id)!;
@@ -211,7 +222,7 @@ export async function orchestrate(input: Input, runId: string, signal: AbortSign
         await event('task_failed', category(error), task.id, task.blocks, diagnosticFor(error));
       }
     };
-    const concurrency = Math.max(1, Math.min(2, Number(process.env.RESEARCH_CONCURRENCY) || 2));
+    const concurrency = mode.concurrency;
     const executeRound = async (tasks: PlannedTask[], round: number) => {
       const parallel = tasks.filter(task => task.researcher !== 'D');
       let index = 0;
@@ -222,7 +233,7 @@ export async function orchestrate(input: Input, runId: string, signal: AbortSign
       if (synthesis && !signal.aborted) await executeTask(synthesis, round);
     };
     await executeRound(planned, 1);
-    if (!retry && !signal.aborted && implications.length) {
+    if (mode.secondRound && !retry && !signal.aborted && implications.length) {
       const affected = new Set(implications.map(implication => implication.blockId));
       const second = (Object.keys(OWNED_BLOCKS) as Researcher[])
         .filter(researcher => OWNED_BLOCKS[researcher].some(block => affected.has(block)))

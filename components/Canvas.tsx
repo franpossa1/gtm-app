@@ -1,6 +1,6 @@
 'use client';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { BLOCK_IDS, BLOCK_META, type BlockId, type Brief, type Scenario, type StreamEvent, type Task, type Workspace, type WorkspaceResponse, type SdkInitDiagnostic } from '../lib/contracts';
+import { BLOCK_IDS, BLOCK_META, type BlockId, type Brief, type Scenario, type StreamEvent, type Task, type Workspace, type WorkspaceResponse, type SdkInitDiagnostic, type WorkspaceSummary } from '../lib/contracts';
 import BriefForm from './BriefForm';
 import BlockCard from './BlockCard';
 import BlockPanel from './BlockPanel';
@@ -15,25 +15,63 @@ export default function Canvas() {
   const [error, setError] = useState('');
   const [latest, setLatest] = useState('Listo para comenzar.');
   const [responseDiagnostic, setResponseDiagnostic] = useState<SdkInitDiagnostic | null>(null);
+  // Native confirm()/prompt() can be disabled by the host browser; use in-page controls instead.
+  const [confirmReset, setConfirmReset] = useState(false);
+  const [newProduct, setNewProduct] = useState('');
+  const [newMarket, setNewMarket] = useState('');
+  const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
+  // The selected investigation lives in the URL (?w=) so reloads and bookmarks keep it.
+  const workspaceRef = useRef('');
+  const [variantName, setVariantName] = useState<string | null>(null);
   const request = useRef<AbortController | null>(null);
   const selectedId = useRef(scenarioId);
   selectedId.current = scenarioId;
+  const scoped = (init: RequestInit = {}): RequestInit => ({ ...init, headers: { ...(init.headers as Record<string, string> | undefined), 'x-workspace-id': workspaceRef.current } });
+  const loadList = useCallback(async () => {
+    const response = await fetch('/api/workspaces', { cache: 'no-store' });
+    const payload = await response.json();
+    if (!response.ok) throw new Error(payload.message || errorMessage(payload.error || 'workspace_unavailable'));
+    setWorkspaces(payload.workspaces);
+    return payload.workspaces as WorkspaceSummary[];
+  }, []);
   const refresh = useCallback(async () => {
-    const response = await fetch('/api/workspace', { cache: 'no-store' });
+    const response = await fetch('/api/workspace', { cache: 'no-store', headers: { 'x-workspace-id': workspaceRef.current } });
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.message || errorMessage(payload.error || 'workspace_unavailable'));
     setState(payload);
-    setScenarioId(current => current || payload.workspace.scenarios[0].id);
+    setScenarioId(current => payload.workspace.scenarios.some((s: Scenario) => s.id === current) ? current : payload.workspace.scenarios[0].id);
     setBusy(Boolean(payload.activeRun));
   }, []);
-  useEffect(() => {
-    void refresh().catch(e => setError(e.message));
-    return () => { request.current?.abort(); };
+  const openWorkspace = useCallback(async (workspaceId: string) => {
+    workspaceRef.current = workspaceId;
+    const url = new URL(window.location.href);
+    url.searchParams.set('w', workspaceId);
+    window.history.replaceState(null, '', url);
+    try { localStorage.setItem('gtm:lastWorkspace', workspaceId); } catch { /* storage may be unavailable */ }
+    setState(null); setScenarioId(''); setSelected(null); setInstruction(''); setError(''); setResponseDiagnostic(null);
+    await refresh();
   }, [refresh]);
+  useEffect(() => {
+    void (async () => {
+      let list = await loadList();
+      let remembered: string | null = null;
+      try { remembered = localStorage.getItem('gtm:lastWorkspace'); } catch { /* ignore */ }
+      const requested = new URL(window.location.href).searchParams.get('w');
+      let target = [requested, remembered].find(candidate => candidate && list.some(w => w.id === candidate)) ?? list[0]?.id;
+      if (!target) {
+        const response = await fetch('/api/workspaces', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ action: 'create' }) });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.message || errorMessage(payload.error || 'workspace_unavailable'));
+        list = payload.workspaces; setWorkspaces(list); target = payload.workspaceId as string;
+      }
+      await openWorkspace(target!);
+    })().catch(e => setError(e.message));
+    return () => { request.current?.abort(); };
+  }, [loadList, openWorkspace]);
   const scenario = state?.workspace.scenarios.find(s => s.id === scenarioId);
   const applyWorkspace = (workspace: Workspace) => setState(current => current ? { ...current, workspace } : current);
   const mutate = async (url: string, body: unknown) => {
-    const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const response = await fetch(url, scoped({ method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }));
     const payload = await response.json();
     if (!response.ok) throw new Error(payload.message || errorMessage(payload.error || 'request_failed'));
     if (payload.workspace) applyWorkspace(payload.workspace);
@@ -46,7 +84,7 @@ export default function Canvas() {
     const abort = new AbortController(); request.current = abort;
     try {
       const response = await fetch('/api/research', { method: 'POST', signal: abort.signal,
-        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ scenarioId: current.id,
+        headers: { 'Content-Type': 'application/json', 'x-workspace-id': workspaceRef.current }, body: JSON.stringify({ scenarioId: current.id,
           expectedRevision: current.revision, instruction: text, blockId, retryTaskId: retryTask?.id }) });
       if (!response.ok) { const payload = await response.json(); setResponseDiagnostic(payload.diagnostic ?? null); throw new Error(payload.message || errorMessage(payload.error || 'research_failed')); }
       if (!response.body) throw new Error('stream_unavailable');
@@ -76,7 +114,7 @@ export default function Canvas() {
     } catch (e) {
       if (!(e instanceof DOMException && e.name === 'AbortError')) setError(e instanceof Error ? e.message : 'research_failed');
     } finally {
-      request.current = null; setBusy(false); await refresh().catch(() => {});
+      request.current = null; setBusy(false); await refresh().catch(() => {}); void loadList().catch(() => {});
     }
   };
   const cancel = async () => {
@@ -91,10 +129,24 @@ export default function Canvas() {
     try { await mutate('/api/workspace', { action: 'brief', scenarioId: scenario.id, expectedRevision: scenario.revision, brief }); setLatest('Brief guardado localmente.'); }
     catch (e) { setError(e instanceof Error ? e.message : 'save_failed'); }
   };
+  const startOver = async () => {
+    if (busy) return;
+    setConfirmReset(false);
+    setError('');
+    try {
+      const response = await fetch('/api/workspaces', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ action: 'create', product: newProduct.trim() || undefined, market: newMarket.trim() || undefined }) });
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.message || errorMessage(payload.error || 'request_failed'));
+      setWorkspaces(payload.workspaces); setNewProduct(''); setNewMarket('');
+      await openWorkspace(payload.workspaceId);
+      setLatest('Investigación nueva. Las anteriores siguen guardadas en el selector.');
+    } catch (e) { setError(e instanceof Error ? e.message : 'create_failed'); }
+  };
   const createVariant = async () => {
-    if (!scenario || busy) return;
-    const name = window.prompt('Nombre de la variante de exploración. El escenario base no se modificará.', 'Cataluña');
-    if (!name?.trim()) return;
+    const name = variantName;
+    setVariantName(null);
+    if (!scenario || busy || !name?.trim()) return;
     try {
       const payload = await mutate('/api/workspace', { action: 'variant', scenarioId: scenario.id, expectedRevision: scenario.revision, name: name.trim() });
       setScenarioId(payload.scenarioId);
@@ -126,18 +178,21 @@ export default function Canvas() {
   const failureDiagnostic = responseDiagnostic || latestFailure?.diagnostic;
   return <>
     <header className="topbar"><div className="brand"><span className="brand-mark">G</span><div><strong>Canvas GTM</strong><span>De la evidencia a la oportunidad</span></div></div>
-      <div className="topbar-right"><span className="local-label"><span className="live-dot" />ESPACIO LOCAL</span><a href="/api/export?format=md" className="top-link">Exportar Markdown</a><a href="/api/export?format=json" className="top-link">JSON ↗</a></div>
+      <div className="topbar-right"><span className="local-label"><span className="live-dot" />ESPACIO LOCAL</span><label className="workspace-picker"><span>INVESTIGACIÓN</span><select value={workspaceRef.current} disabled={busy} onChange={e => void openWorkspace(e.target.value).catch(err => setError(err.message))}>{workspaces.map(w => <option key={w.id} value={w.id}>{w.product} · {w.market} · {w.updatedAt ? new Date(w.updatedAt).toLocaleString('es', { dateStyle: 'short', timeStyle: 'short' }) : ''}</option>)}</select></label><a href={`/api/export?format=md&workspace=${workspaceRef.current}`} className="top-link">Exportar Markdown</a><a href={`/api/export?format=json&workspace=${workspaceRef.current}`} className="top-link">JSON ↗</a></div>
     </header>
     <main className="workspace">
       <div className="page-heading"><div><div className="eyebrow">EXPLORACIÓN DE MERCADO CON DECISIONES HUMANAS</div><h1>La próxima oportunidad,<br /><span>basada en evidencia.</span></h1><p>Investigar el mercado. Conectar las implicaciones. Mantener las decisiones humanas.</p></div>
-        <div className="scenario-control"><label>ESCENARIO<select value={scenarioId} onChange={e => { setScenarioId(e.target.value); setSelected(null); }} disabled={busy}>{state.workspace.scenarios.map(s => <option value={s.id} key={s.id}>{s.name}</option>)}</select></label><button className="secondary" disabled={busy} onClick={() => void createVariant()}>+ Nueva variante</button><span className="tiny muted">Revisión humana {scenario.revision}{scenario.origin ? ' · variante derivada' : ' · escenario base'}</span></div>
+        <div className="scenario-control"><label>ESCENARIO<select value={scenarioId} onChange={e => { setScenarioId(e.target.value); setSelected(null); }} disabled={busy}>{state.workspace.scenarios.map(s => <option value={s.id} key={s.id}>{s.name}</option>)}</select></label><div className="scenario-actions"><button className="secondary" disabled={busy} onClick={() => { setConfirmReset(false); setVariantName('Cataluña'); }}>+ Nueva variante</button><button className="secondary" disabled={busy} title="Crear una investigación nueva; las anteriores se conservan" onClick={() => { setVariantName(null); setConfirmReset(true); }}>Nuevo</button></div>
+          {variantName !== null && <form className="inline-confirm" onSubmit={e => { e.preventDefault(); void createVariant(); }}><label className="tiny">Nombre de la variante. El escenario base no se modificará.<input autoFocus value={variantName} maxLength={100} onChange={e => setVariantName(e.target.value)} /></label><div className="scenario-actions"><button type="button" className="quiet" onClick={() => setVariantName(null)}>Cancelar</button><button type="submit" disabled={!variantName.trim()}>Crear variante</button></div></form>}
+          {confirmReset && <form className="inline-confirm" aria-label="Nueva investigación" onSubmit={e => { e.preventDefault(); void startOver(); }}><p className="tiny">Nueva investigación desde cero. La actual queda guardada y se puede volver a abrir desde el selector.</p><label className="tiny">Producto<input autoFocus value={newProduct} maxLength={200} placeholder="Manual digital de anestesiología" onChange={e => setNewProduct(e.target.value)} /></label><label className="tiny">Mercado<input value={newMarket} maxLength={100} placeholder="España" onChange={e => setNewMarket(e.target.value)} /></label><div className="scenario-actions"><button type="button" className="quiet" onClick={() => setConfirmReset(false)}>Cancelar</button><button type="submit">Crear investigación</button></div></form>}<span className="tiny muted">Revisión humana {scenario.revision}{scenario.origin ? ' · variante derivada' : ' · escenario base'}</span></div>
       </div>
+      {state.runningElsewhere && <div className="notice warning">Hay una investigación en curso en otra investigación guardada. Solo se ejecuta una a la vez; esta queda editable, pero no se puede lanzar hasta que termine.</div>}
       {staleBase && <div className="notice warning">El escenario base cambió desde que se creó esta variante. Este estado sigue siendo independiente; puede requerir una nueva revisión.</div>}
       {!state.configuration.ready && <div className="notice setup"><span className="notice-icon">!</span><div><strong>Completar la configuración local para investigar.</strong><p>{!state.configuration.keyPresent && <>Configurar <code>ANTHROPIC_API_KEY</code> en <code>.env.local</code>. </>}{!state.configuration.budgetPresent && <>Configurar un valor positivo en <code>RUN_BUDGET_USD</code> en <code>.env.local</code>. </>}No incluir secretos aquí. El brief puede guardarse durante la configuración; reiniciar el servidor después de cambiar las variables de entorno.</p></div></div>}
       <div className="config-line"><span>Claude Agent SDK · {state.configuration.modelMode === 'default' ? 'modelo predeterminado del SDK' : 'modelo configurado localmente'}</span><span>{state.configuration.budgetPresent ? `${state.configuration.budgetSource} configurado · los costos informados son estimaciones` : 'Presupuesto de investigación sin configurar'}</span></div>
       <BriefForm brief={scenario.brief} scenarioId={scenario.id} busy={busy} onSave={saveBrief} />
-      <section className="composer"><div className="composer-heading"><div><h2>¿Qué se debe explorar?</h2><p>Una instrucción. Investigadores independientes. Implicaciones conectadas.</p></div><span className="badge neutral">Máx. 2 rondas · 2 simultáneos</span></div>
-        <div className="composer-input"><textarea value={instruction} onChange={e => setInstruction(e.target.value)} placeholder="Explorar el mercado de España para este manual. Encontrar oportunidades respaldadas y explicitar lo desconocido." rows={2} maxLength={6000} /><button disabled={busy || !state.configuration.ready} onClick={() => void research(instruction.trim() || 'Explorar este producto y mercado. Encontrar oportunidades respaldadas, explicitar lo desconocido y preservar las decisiones humanas.')}>{busy ? 'Investigando…' : 'Iniciar investigación'} <span>↗</span></button></div>
+      <section className="composer"><div className="composer-heading"><div><h2>¿Qué se debe explorar?</h2><p>Una instrucción. Investigadores independientes. Implicaciones conectadas.</p></div><span className="badge neutral">{state.configuration.research.mode === 'fast' ? 'Modo rápido' : 'Modo completo'} · {state.configuration.research.rounds} {state.configuration.research.rounds === 1 ? 'ronda' : 'rondas'} · {state.configuration.research.concurrency} simultáneos · investigación corta: {state.configuration.research.searches} {state.configuration.research.searches === 1 ? 'búsqueda' : 'búsquedas'} + hasta {state.configuration.research.fetches} fuentes · {state.configuration.research.model}</span></div>
+        <div className="composer-input"><textarea value={instruction} onChange={e => setInstruction(e.target.value)} placeholder="Explorar el mercado de España para este manual. Encontrar oportunidades respaldadas y explicitar lo desconocido." rows={2} maxLength={6000} /><button disabled={busy || !state.configuration.ready || Boolean(state.runningElsewhere)} onClick={() => void research(instruction.trim() || 'Explorar este producto y mercado. Encontrar oportunidades respaldadas, explicitar lo desconocido y preservar las decisiones humanas.')}>{busy ? 'Investigando…' : 'Iniciar investigación'} <span>↗</span></button></div>
       </section>
       {error && <div className="notice danger" role="alert"><span>{errorMessage(error)}</span><button className="quiet" onClick={() => setError('')}>Cerrar</button></div>}
       {failureDiagnostic && <section className="notice danger" aria-label="Diagnóstico de configuración del SDK"><div><strong>Último fallo de configuración del SDK</strong><p className="tiny">La investigación se detuvo; los permisos no se ampliaron.</p><details open><summary>Detalle seguro del fallo</summary><ul className="tiny">{diagnosticLines(failureDiagnostic).map(line => <li key={line}>{line}</li>)}</ul></details></div></section>}
